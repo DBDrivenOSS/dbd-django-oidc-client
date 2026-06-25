@@ -1,0 +1,66 @@
+# Publishes dbd-django-oidc-client to PyPI via Trusted Publishing (OIDC).
+#
+# DORMANT until you:
+#   1. Pick the repo home (owner/repo) and push there.
+#   2. On PyPI, add a "pending publisher" (Your projects -> Publishing) pointing at:
+#        owner:        <the account/org that owns the repo>
+#        repository:   dbd-django-oidc-client
+#        workflow:     release.yml
+#        environment:  release
+#   3. Create a "release" environment in the repo (Settings -> Environments),
+#      optionally with required reviewers as a publish gate.
+#   4. Publish a GitHub Release.
+#
+# No API token is stored anywhere: GitHub mints a short-lived OIDC token that
+# PyPI trusts because its claims match the pending publisher registered above.
+
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Verify dbd namespace invariant
+        run: python3 scripts/check_wheel_namespace.py
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release  # gate: add required reviewers in repo settings if desired
+    permissions:
+      id-token: write  # OIDC token for PyPI Trusted Publishing; no stored secret
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

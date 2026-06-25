@@ -1,0 +1,37 @@
+name: Audit
+
+# SCA (vendor-neutral): pip-audit checks the fully-resolved dependency set
+# against the PyPA Advisory Database. Unlike Dependabot/Dependency Review this
+# is not GitHub-specific and runs as a hard CI gate, including on a schedule so
+# a newly-disclosed CVE in an existing dependency turns the build red without
+# any code change.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * 1"  # weekly, Monday 03:41 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (PyPA advisory DB)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Export resolved dependencies
+        run: uv export --no-emit-project --all-extras --format requirements-txt -o requirements.txt
+
+      - name: Audit against the PyPA advisory database
+        run: uvx pip-audit -r requirements.txt
