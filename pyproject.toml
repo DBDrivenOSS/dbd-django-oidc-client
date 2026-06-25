@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dbd-django-oidc-client"
+version = "0.1.0"
+description = "Reusable OpenID Connect relying party (authorization code + PKCE) for Django, backed by Authlib."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "DBDrivenSolutions" }]
+keywords = ["django", "oidc", "openid-connect", "oauth2", "sso", "pkce", "authlib"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Framework :: Django",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "Django>=4.2",
+    "Authlib>=1.6",
+    "joserfc>=1.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+otel = ["opentelemetry-api>=1.20"]
+test = ["pytest>=8", "pytest-django>=4.8"]
+
+[project.urls]
+Homepage = "https://github.com/DBDrivenSolutions/dbd-django-oidc-client"
+Source = "https://github.com/DBDrivenSolutions/dbd-django-oidc-client"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dbd"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
