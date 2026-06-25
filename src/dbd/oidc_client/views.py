@@ -200,7 +200,9 @@ class OpenIDConnectViewMixin:
         if nonce and nonce != claims.get("nonce"):
             raise SuspiciousOperation("ID token nonce does not match the pending login nonce.")
 
-        self.attempt_extra = {k: v for k, v in attempt.items() if k not in ("code_verifier", "nonce")}
+        self.attempt_extra = {
+            k: v for k, v in attempt.items() if k not in ("code_verifier", "nonce")
+        }
         return token_response
 
 

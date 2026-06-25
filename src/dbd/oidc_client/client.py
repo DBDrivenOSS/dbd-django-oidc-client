@@ -45,7 +45,17 @@ _JWKS_CACHE_PREFIX = "oidc-jwks:"
 _LEEWAY = 120
 # Asymmetric signing algorithms accepted for id_tokens. Pinning this rejects
 # alg-confusion / "none" attacks.
-_ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
+_ALLOWED_ALGORITHMS = [
+    "RS256",
+    "RS384",
+    "RS512",
+    "ES256",
+    "ES384",
+    "ES512",
+    "PS256",
+    "PS384",
+    "PS512",
+]
 
 token_exchange_counter = meter.create_counter(
     name="oauth_token_exchange_requests_total",
@@ -312,7 +322,9 @@ class OpenIDConnectAuthorizationProvider:
             )
         except Exception:
             token = jwt.decode(
-                raw_id_token, self.open_id_configuration.refresh_jwks(), algorithms=_ALLOWED_ALGORITHMS
+                raw_id_token,
+                self.open_id_configuration.refresh_jwks(),
+                algorithms=_ALLOWED_ALGORITHMS,
             )
 
         options = None

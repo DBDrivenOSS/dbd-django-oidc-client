@@ -33,7 +33,9 @@ def get_config() -> dict:
     """
     config = getattr(settings, SETTINGS_KEY, None)
     if not config:
-        raise ImproperlyConfigured(f"The {SETTINGS_KEY} setting is required by dbd-django-oidc-client.")
+        raise ImproperlyConfigured(
+            f"The {SETTINGS_KEY} setting is required by dbd-django-oidc-client."
+        )
     return config
 
 
