@@ -1,0 +1,10 @@
+# Normalize line endings: store as LF in the repo and check out as LF on every
+# platform. Silences the "LF will be replaced by CRLF" warnings on Windows and
+# keeps diffs clean for contributors regardless of OS.
+* text=auto eol=lf
+
+# Common binary types: never normalize or diff as text.
+*.png binary
+*.jpg binary
+*.gz binary
+*.whl binary
