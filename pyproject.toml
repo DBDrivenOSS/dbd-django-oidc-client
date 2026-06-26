@@ -29,8 +29,9 @@ otel = ["opentelemetry-api>=1.20"]
 test = ["pytest>=8", "pytest-django>=4.8"]
 
 [project.urls]
-Homepage = "https://github.com/DBDrivenSolutions/dbd-django-oidc-client"
-Source = "https://github.com/DBDrivenSolutions/dbd-django-oidc-client"
+Homepage = "https://github.com/DBDrivenOSS/dbd-django-oidc-client"
+Source = "https://github.com/DBDrivenOSS/dbd-django-oidc-client"
+Issues = "https://github.com/DBDrivenOSS/dbd-django-oidc-client/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dbd"]
