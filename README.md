@@ -1,6 +1,6 @@
 # dbd-django-oidc-client
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CI](https://github.com/DBDrivenOSS/dbd-django-oidc-client/actions/workflows/ci.yml/badge.svg)](https://github.com/DBDrivenOSS/dbd-django-oidc-client/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 A small, reusable OpenID Connect **relying party** for Django. It implements the
 authorization-code flow with PKCE, `state`, and `nonce`, and provides class-based
