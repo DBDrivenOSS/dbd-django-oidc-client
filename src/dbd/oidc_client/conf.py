@@ -49,7 +49,6 @@ def _resolve(name: str, override, *, required: bool = True):
 
 def build_client(
     redirect_uri: str,
-    request=None,
     *,
     discovery_url: None | str = None,
     client_id: None | str = None,
@@ -57,9 +56,13 @@ def build_client(
 ) -> OpenIDConnectAuthorizationProvider:
     """Construct a provider client from settings, with optional per-call overrides.
 
+    The ``redirect_uri`` may be a relative path; it is stored as-is and the
+    provider absolutizes it per call (``auth_redirect``/``token``/
+    ``end_session_redirect`` each take the request), so no request is needed here.
+
     Args:
-        redirect_uri: The callback URI for this flow.
-        request: The current request, used to absolutize a relative redirect URI.
+        redirect_uri: The callback URI for this flow (absolute, or relative to be
+            absolutized later by the provider methods).
         discovery_url: Overrides ``OIDC_CLIENT["discovery_url"]``.
         client_id: Overrides ``OIDC_CLIENT["client_id"]``.
         client_secret: Overrides ``OIDC_CLIENT["client_secret"]``.

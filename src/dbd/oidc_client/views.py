@@ -78,7 +78,6 @@ class OpenIDConnectViewMixin:
         """Return the OIDC client for this view, built from settings by default."""
         return build_client(
             self.get_redirect_uri(),
-            self.request,
             discovery_url=self.discovery_url,
             client_id=self.client_id,
             client_secret=self.client_secret,
