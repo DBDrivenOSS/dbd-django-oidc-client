@@ -36,7 +36,7 @@ from django.shortcuts import redirect
 from joserfc import jwt
 from joserfc.jwk import KeySet
 
-from dbd.oidc_client.http import get_session
+from dbd.oidc_client.http import get_session, inherit_transport
 from dbd.oidc_client.telemetry import meter, tracer
 
 _CONFIG_CACHE_PREFIX = "oidc-config:"
@@ -218,12 +218,18 @@ class OpenIDConnectAuthorizationProvider:
         self.open_id_configuration = open_id_configuration
 
     def _session(self, redirect_uri: str) -> OAuth2Session:
-        return OAuth2Session(
+        # Authlib's OAuth2Session is a separate requests.Session that the library
+        # builds itself, so copy the configured session's transport onto it.
+        # Without this the token exchange would ignore OIDC_CLIENT["session"]
+        # (custom TLS/proxy) and fall back to requests' defaults — e.g. certifi's
+        # CA bundle instead of a system trust store.
+        session = OAuth2Session(
             client_id=self.client_id,
             client_secret=self.client_secret,
             redirect_uri=redirect_uri,
             code_challenge_method="S256",
         )
+        return inherit_transport(session, get_session())
 
     def auth_redirect(
         self,

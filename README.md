@@ -14,8 +14,12 @@ views you subclass per application.
   and the code-for-token exchange use Authlib's `OAuth2Session`. The ID token's
   signature and OIDC claims (`iss`, `aud`, `exp`) are verified with joserfc and
   `CodeIDToken`, with signing algorithms pinned to an asymmetric allowlist.
-- **One injectable HTTP session.** Discovery and JWKS calls go through a single
-  `requests.Session`, swappable via `OIDC_CLIENT["session"]`.
+- **One injectable HTTP session.** Every provider call honors a single
+  `requests.Session`, swappable via `OIDC_CLIENT["session"]`. Discovery and JWKS
+  use it directly; the token exchange runs through Authlib's own `OAuth2Session`,
+  so the library copies that session's transport (mounted adapters plus
+  `verify`/`cert`/`proxies`/`trust_env`) onto it. A custom system trust store,
+  proxy, or mTLS config thus applies to the token POST too, not just the GETs.
 - **OpenTelemetry is optional.** Install the `otel` extra to record a
   token-exchange counter and span; without it, no-op shims are used.
 - **Safe across concurrent tabs.** Logins are isolated by OAuth `state`, so two
