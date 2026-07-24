@@ -63,6 +63,12 @@ token_exchange_counter = meter.create_counter(
     unit="{request}",
 )
 
+token_refresh_counter = meter.create_counter(
+    name="oauth_token_refresh_requests_total",
+    description="Total OAuth token refresh requests by outcome",
+    unit="{request}",
+)
+
 
 def _is_absolute_uri(uri: str) -> bool:
     return bool(urlparse(uri).netloc)
@@ -306,6 +312,54 @@ class OpenIDConnectAuthorizationProvider:
         raw_id_token = token_response["id_token"]
         claims = self.validate_id_token(raw_id_token)
         token_response["id_token"] = IDToken(raw_id_token, dict(claims))
+        return token_response
+
+    def refresh(self, refresh_token: str) -> dict:
+        """Exchange a refresh token for a fresh token set (RFC 6749 §6).
+
+        Runs the ``refresh_token`` grant against the provider's token endpoint,
+        reusing this client's credentials and the configured HTTP transport, so
+        ``OIDC_CLIENT["session"]`` governs the call exactly as it does the code
+        exchange. The relying-party login flow never needs this — the user is
+        already authenticated — but applications that keep a provider access
+        token alive between API calls do, so the grant lives on the client where
+        the ``OIDC_CLIENT`` config is the single source of truth.
+
+        A refresh response is not required to carry an ``id_token`` (providers
+        such as django-oauth-toolkit omit it), so the ID token is validated and
+        wrapped only when one is returned; otherwise the result simply has no
+        ``id_token`` key.
+
+        Args:
+            refresh_token: A refresh token issued with a prior token response.
+
+        Returns:
+            The token response. When the provider returns an ``id_token`` it is
+            replaced by a validated ``IDToken``, mirroring ``token()``.
+        """
+        # The redirect_uri plays no part in the refresh grant; the session just
+        # needs this client's credentials and inherited transport.
+        session = self._session(self.redirect_uri)
+
+        with tracer.start_as_current_span("oidc.token_refresh"):
+            try:
+                token_response = session.refresh_token(
+                    self.open_id_configuration.token_endpoint,
+                    refresh_token=refresh_token,
+                )
+            except Exception:
+                token_refresh_counter.add(1, attributes={"outcome": "failure"})
+                raise
+            else:
+                token_refresh_counter.add(1, attributes={"outcome": "success"})
+
+        token_response = dict(token_response)
+
+        raw_id_token = token_response.get("id_token")
+        if raw_id_token:
+            claims = self.validate_id_token(raw_id_token)
+            token_response["id_token"] = IDToken(raw_id_token, dict(claims))
+
         return token_response
 
     def validate_id_token(self, raw_id_token: str) -> CodeIDToken:
