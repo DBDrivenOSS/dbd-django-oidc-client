@@ -2,6 +2,8 @@
 
 SECRET_KEY = "test-only-not-secret"
 
+ROOT_URLCONF = "tests.urls"
+
 INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
