@@ -14,6 +14,11 @@ views you subclass per application.
   and the code-for-token exchange use Authlib's `OAuth2Session`. The ID token's
   signature and OIDC claims (`iss`, `aud`, `exp`) are verified with joserfc and
   `CodeIDToken`, with signing algorithms pinned to an asymmetric allowlist.
+- **Refresh grant on the client.** `provider.refresh(refresh_token)` runs the
+  `refresh_token` grant against the token endpoint, reusing the same credentials
+  and transport. The login flow itself doesn't need it, but apps that keep a
+  provider access token alive between API calls do; any returned `id_token` is
+  validated like the code exchange, and responses without one pass through.
 - **One injectable HTTP session.** Every provider call honors a single
   `requests.Session`, swappable via `OIDC_CLIENT["session"]`. Discovery and JWKS
   use it directly; the token exchange runs through Authlib's own `OAuth2Session`,
