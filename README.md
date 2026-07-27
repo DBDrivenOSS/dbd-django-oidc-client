@@ -19,10 +19,15 @@ views you subclass per application.
   and transport. The login flow itself doesn't need it, but apps that keep a
   provider access token alive between API calls do; any returned `id_token` is
   validated like the code exchange, and responses without one pass through.
+- **UserInfo on the client.** `provider.userinfo(access_token)` presents a token
+  to the provider's userinfo endpoint (OIDC Core §5.3) and returns the claims.
+  Relying parties use it for claims the ID token omits; resource servers use it
+  to validate opaque access tokens they cannot verify locally, treating a
+  non-2xx as rejection.
 - **One injectable HTTP session.** Every provider call honors a single
-  `requests.Session`, swappable via `OIDC_CLIENT["session"]`. Discovery and JWKS
-  use it directly; the token exchange runs through Authlib's own `OAuth2Session`,
-  so the library copies that session's transport (mounted adapters plus
+  `requests.Session`, swappable via `OIDC_CLIENT["session"]`. Discovery, JWKS,
+  and userinfo use it directly; the token exchange runs through Authlib's own
+  `OAuth2Session`, so the library copies that session's transport (mounted adapters plus
   `verify`/`cert`/`proxies`/`trust_env`) onto it. A custom system trust store,
   proxy, or mTLS config thus applies to the token POST too, not just the GETs.
 - **OpenTelemetry is optional.** Install the `otel` extra to record a

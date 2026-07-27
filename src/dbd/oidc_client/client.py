@@ -15,8 +15,8 @@ signature and its OIDC claims (``iss``, ``aud`` including the ``azp`` rule, and
 asymmetric allowlist, so ``alg`` confusion (an HS256 token verified against an
 RSA key, or ``alg=none``) is rejected.
 
-Discovery and JWKS fetches go through ``dbd.oidc_client.http.get_session`` (swap via
-``OIDC_CLIENT["session"]``); OpenTelemetry is optional.
+Discovery, JWKS, and userinfo fetches go through ``dbd.oidc_client.http.get_session``
+(swap via ``OIDC_CLIENT["session"]``); OpenTelemetry is optional.
 """
 
 from __future__ import annotations
@@ -66,6 +66,12 @@ token_exchange_counter = meter.create_counter(
 token_refresh_counter = meter.create_counter(
     name="oauth_token_refresh_requests_total",
     description="Total OAuth token refresh requests by outcome",
+    unit="{request}",
+)
+
+userinfo_counter = meter.create_counter(
+    name="oidc_userinfo_requests_total",
+    description="Total OIDC userinfo requests by outcome",
     unit="{request}",
 )
 
@@ -396,6 +402,51 @@ class OpenIDConnectAuthorizationProvider:
         )
         claims.validate(leeway=_LEEWAY)
         return claims
+
+    def userinfo(self, access_token: str) -> dict:
+        """Fetch the UserInfo claims for an access token (OIDC Core §5.3).
+
+        Presents the token as a bearer credential to the provider's userinfo
+        endpoint and returns the claims it answers with. Runs on the configured
+        ``OIDC_CLIENT["session"]``, so a custom trust store, proxy, or mTLS
+        config governs this call exactly as it does discovery and the token
+        exchange.
+
+        Relying parties use this to pick up claims the ID token does not carry.
+        It also serves the resource-server case: forwarding an inbound bearer
+        token here and treating a non-2xx as rejection validates opaque access
+        tokens that cannot be verified locally.
+
+        Args:
+            access_token: The access token to present as a bearer credential.
+
+        Returns:
+            The parsed userinfo claims.
+
+        Raises:
+            ImproperlyConfigured: If the provider advertises no userinfo endpoint.
+            requests.HTTPError: If the provider rejects the token or errors. A
+                401 here is the provider's verdict on the token, so callers
+                validating a credential should treat it as "invalid", not as a
+                transport fault.
+        """
+        endpoint = self.open_id_configuration.userinfo_endpoint
+        if not endpoint:
+            raise ImproperlyConfigured("Provider does not advertise a userinfo_endpoint.")
+
+        with tracer.start_as_current_span("oidc.userinfo"):
+            try:
+                response = get_session().get(
+                    endpoint, headers={"Authorization": f"Bearer {access_token}"}
+                )
+                response.raise_for_status()
+            except Exception:
+                userinfo_counter.add(1, attributes={"outcome": "failure"})
+                raise
+            else:
+                userinfo_counter.add(1, attributes={"outcome": "success"})
+
+        return response.json()
 
     def end_session_redirect(
         self,
