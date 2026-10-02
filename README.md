@@ -96,6 +96,79 @@ class CallbackView(BaseOpenIDConnectCallbackView):
 | `scopes`, `session_namespace`, `redirect_uri_name` | flow tuning |
 | `discovery_url` / `client_id` / `client_secret` (view attrs) | per-view provider override (multi-IdP apps) |
 | `get_oauth_client()` | override wholesale for an exotic client |
+| `handle_callback_error(exc)` | answer a sign in that did not finish (callback view) |
+| `handle_redirect_error(exc)` | answer a sign in that could not start (redirect view) |
+
+## Error handling
+
+Every way a sign in can stop short of a session raises a subclass of
+`dbd.oidc_client.exceptions.OIDCError`. You do not need to import Authlib,
+joserfc, or requests to catch one.
+
+| Exception | Raised when | Also a |
+| --- | --- | --- |
+| `StateMismatch` | the callback `state` matches no pending attempt in this session | `SuspiciousOperation` |
+| `AuthorizationErrorResponse` | the provider sent `error` in place of `code` (RFC 6749 section 4.1.2.1) | `SuspiciousOperation` |
+| `MissingAuthorizationCode` | the callback has neither `code` nor `error` | `SuspiciousOperation` |
+| `ProviderUnreachable` | discovery, JWKS, or the token endpoint gave no usable answer | `requests.RequestException` |
+| `TokenExchangeError` | the token endpoint refused the code | |
+| `IDTokenValidationError` | the ID token is missing, or its signature or claims are wrong | |
+| `NonceMismatch` | the ID token `nonce` is not the one this attempt sent | `SuspiciousOperation` |
+
+The table is in the order the callback can raise them. The first three are
+raised before any call to the provider.
+
+The callback view passes the error to `handle_callback_error(exc)`, and the
+redirect view passes it to `handle_redirect_error(exc)`. Override the hook to
+return your own response:
+
+```python
+from django.shortcuts import render
+
+from dbd.oidc_client.exceptions import AuthorizationErrorResponse, ProviderUnreachable
+from dbd.oidc_client.views import BaseOpenIDConnectCallbackView
+
+class CallbackView(BaseOpenIDConnectCallbackView):
+    success_url = "home"
+
+    def handle_callback_error(self, exc):
+        if isinstance(exc, AuthorizationErrorResponse) and exc.error == "access_denied":
+            return render(self.request, "sso/not_assigned.html", status=403)
+
+        if isinstance(exc, ProviderUnreachable):
+            return render(self.request, "sso/try_again.html", status=502)
+
+        raise exc
+```
+
+What to know:
+
+- **The default raises the error again.** A view that overrides neither hook
+  lets Django answer: 400 for the errors that are also a `SuspiciousOperation`,
+  500 for the others. A callback with `error` in it used to end as a 500 from a
+  token exchange that had no code to send. It is now a 400, and the provider is
+  not called.
+- **The provider's error text is not safe to show.** `error`, `description`, and
+  `uri` on `AuthorizationErrorResponse` come from the query string, so anyone
+  can write them. The library keeps them out of `str(exc)` and builds no
+  response from them. Log them if you want them. Never render them.
+- **The state is checked first.** An `error` that arrives with a `state` this
+  session does not hold raises `StateMismatch`, because nothing ties that error
+  to a sign in this session started. When the state does match, the pending
+  attempt is consumed, so the same callback cannot be answered twice.
+- **Each error says what it knows.** `AuthorizationErrorResponse` and
+  `TokenExchangeError` carry `error`, `description`, and `uri`.
+  `ProviderUnreachable` carries `stage` (`"discovery"`, `"jwks"`, or `"token"`).
+  The original Authlib, joserfc, or requests error is on `__cause__`.
+- **Earlier `except` clauses keep working.** `ProviderUnreachable` is still a
+  `requests.RequestException`. When the provider answered with an HTTP error
+  status it is a `ProviderHTTPError`, which is also a `requests.HTTPError`.
+- **Your own refusals can use the same hook.** `handle_callback_error` receives
+  every `OIDCError` raised while the callback is handled. Raise your own
+  subclass from `get_or_create_user_from_claims` to refuse an account, and
+  answer it in the hook.
+- **`refresh()` and `userinfo()` are not part of this.** They still raise the
+  Authlib, joserfc, and requests errors they raised before.
 
 ## Development
 

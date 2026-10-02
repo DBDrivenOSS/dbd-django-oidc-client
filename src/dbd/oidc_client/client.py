@@ -25,6 +25,8 @@ import json
 from dataclasses import dataclass
 from urllib.parse import urlencode, urlparse
 
+import requests
+from authlib.common.errors import AuthlibBaseError
 from authlib.common.security import generate_token
 from authlib.integrations.requests_client import OAuth2Session
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
@@ -36,6 +38,13 @@ from django.shortcuts import redirect
 from joserfc import jwt
 from joserfc.jwk import KeySet
 
+from dbd.oidc_client.exceptions import (
+    IDTokenValidationError,
+    OIDCError,
+    ProviderHTTPError,
+    ProviderUnreachable,
+    TokenExchangeError,
+)
 from dbd.oidc_client.http import get_session, inherit_transport
 from dbd.oidc_client.telemetry import meter, tracer
 
@@ -155,6 +164,7 @@ class OpenIDConfiguration:
 
         Raises:
             ValueError: If ``discovery_url`` is not absolute.
+            ProviderUnreachable: If the discovery document cannot be fetched.
         """
         if not _is_absolute_uri(discovery_url):
             raise ValueError(f"discovery_url must be absolute, got {discovery_url!r}")
@@ -162,7 +172,7 @@ class OpenIDConfiguration:
         return cache.get_or_set(
             f"{_CONFIG_CACHE_PREFIX}{discovery_url}",
             default=lambda: cls.from_config(
-                get_session().get(discovery_url).json(),
+                _fetch_json(discovery_url, stage="discovery"),
                 discovery_url=discovery_url,
             ),
             timeout=timeout,
@@ -191,13 +201,14 @@ class OpenIDConfiguration:
 
         Raises:
             ImproperlyConfigured: If the configuration has no ``jwks_uri``.
+            ProviderUnreachable: If the key set cannot be fetched.
         """
         if not self.jwks_uri:
             raise ImproperlyConfigured("Provider configuration has no jwks_uri.")
 
         raw = cache.get_or_set(
             f"{_JWKS_CACHE_PREFIX}{self.jwks_uri}",
-            default=lambda: get_session().get(self.jwks_uri).json(),
+            default=lambda: _fetch_json(self.jwks_uri, stage="jwks"),
             timeout=60 * 60,
         )
         return KeySet.import_key_set(raw)
@@ -294,19 +305,20 @@ class OpenIDConnectAuthorizationProvider:
         Returns:
             The token response, with ``id_token`` replaced by a validated
             ``IDToken``.
+
+        Raises:
+            ProviderUnreachable: If the token endpoint or the JWKS endpoint gives
+                no usable answer.
+            TokenExchangeError: If the token endpoint refuses the code.
+            IDTokenValidationError: If the response has no ID token, or its
+                signature or claims are wrong.
         """
         redirect_uri = self.insure_absolute_redirect(self.redirect_uri, request=request)
         session = self._session(redirect_uri)
 
         with tracer.start_as_current_span("oidc.token_exchange"):
             try:
-                token_response = session.fetch_token(
-                    self.open_id_configuration.token_endpoint,
-                    grant_type="authorization_code",
-                    code=code,
-                    redirect_uri=redirect_uri,
-                    code_verifier=code_verifier,
-                )
+                token_response = self._exchange_code(session, redirect_uri, code, code_verifier)
             except Exception:
                 token_exchange_counter.add(1, attributes={"outcome": "failure"})
                 raise
@@ -315,10 +327,41 @@ class OpenIDConnectAuthorizationProvider:
 
         token_response = dict(token_response)
 
-        raw_id_token = token_response["id_token"]
-        claims = self.validate_id_token(raw_id_token)
+        raw_id_token = token_response.get("id_token")
+        if not raw_id_token:
+            raise IDTokenValidationError("The token response carries no ID token.")
+
+        # Whatever stops validation means the token is not proven, and the JOSE
+        # error types differ between Authlib releases, so this goes by stage and
+        # not by type. A JWKS fetch failure and a configuration fault keep theirs.
+        try:
+            claims = self.validate_id_token(raw_id_token)
+        except (OIDCError, ImproperlyConfigured):
+            raise
+        except Exception as exc:
+            raise IDTokenValidationError("The ID token could not be validated.") from exc
+
         token_response["id_token"] = IDToken(raw_id_token, dict(claims))
         return token_response
+
+    def _exchange_code(
+        self, session: OAuth2Session, redirect_uri: str, code: str, code_verifier: None | str
+    ) -> dict:
+        """POST the code to the token endpoint, reporting a failure as an ``OIDCError``."""
+        try:
+            return session.fetch_token(
+                self.open_id_configuration.token_endpoint,
+                grant_type="authorization_code",
+                code=code,
+                redirect_uri=redirect_uri,
+                code_verifier=code_verifier,
+            )
+        except requests.RequestException as exc:
+            raise _provider_unreachable("token", exc) from exc
+        except AuthlibBaseError as exc:
+            raise TokenExchangeError(
+                exc.error, description=exc.description or None, uri=exc.uri
+            ) from exc
 
     def refresh(self, refresh_token: str) -> dict:
         """Exchange a refresh token for a fresh token set (RFC 6749 §6).
@@ -531,3 +574,30 @@ class OpenIDConnectAuthorizationProvider:
     def generate_state() -> str:
         """Return a new OAuth state token."""
         return generate_token(32)
+
+
+def _fetch_json(url: str, *, stage: str) -> dict:
+    """GET a provider document, reporting a failure as ``ProviderUnreachable``.
+
+    An error status is refused here so that an error page is never parsed, and
+    never cached, as the document.
+
+    Args:
+        url: The document's absolute URL.
+        stage: The ``ProviderUnreachable.stage`` to report on failure.
+
+    Returns:
+        The parsed JSON document.
+    """
+    try:
+        response = get_session().get(url)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as exc:
+        raise _provider_unreachable(stage, exc) from exc
+
+
+def _provider_unreachable(stage: str, exc: requests.RequestException) -> ProviderUnreachable:
+    """Wrap a ``requests`` failure, keeping an HTTP error status catchable as one."""
+    error_class = ProviderHTTPError if isinstance(exc, requests.HTTPError) else ProviderUnreachable
+    return error_class(stage, exc)

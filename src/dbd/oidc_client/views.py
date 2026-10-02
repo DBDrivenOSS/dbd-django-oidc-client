@@ -12,6 +12,11 @@ override ``get_or_create_user_from_claims``.
 
 Concurrent logins are tab-safe: each in-flight attempt is stored under its own
 OAuth ``state``, so simultaneous logins in different tabs do not collide.
+
+A sign in that does not finish raises an ``OIDCError`` (see
+``dbd.oidc_client.exceptions``). The redirect and callback views pass it to
+``handle_redirect_error`` and ``handle_callback_error``, which raise it again
+unless a subclass answers with a response of its own.
 """
 
 from __future__ import annotations
@@ -20,8 +25,8 @@ import json
 
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth import logout as auth_logout
-from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
-from django.http import HttpResponseRedirect
+from django.core.exceptions import ImproperlyConfigured
+from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import resolve_url
 from django.urls import reverse
 from django.views.generic import RedirectView
@@ -29,6 +34,13 @@ from django.views.generic import RedirectView
 from dbd.oidc_client.claims import OpenIDClaims
 from dbd.oidc_client.client import OpenIDConnectAuthorizationProvider
 from dbd.oidc_client.conf import build_client
+from dbd.oidc_client.exceptions import (
+    AuthorizationErrorResponse,
+    MissingAuthorizationCode,
+    NonceMismatch,
+    OIDCError,
+    StateMismatch,
+)
 
 # Session key under which the serialized ID token is stashed for RP-initiated
 # logout (``id_token_hint``). Namespaced to avoid colliding with app session data.
@@ -50,6 +62,8 @@ class OpenIDConnectViewMixin:
 
     * ``success_url`` / ``get_or_create_user_from_claims`` — on the callback
       view, the per-app bits.
+    * ``handle_callback_error`` / ``handle_redirect_error`` — answer a sign in
+      that did not finish with your own response.
     * ``redirect_uri_name``, ``scopes``, ``session_namespace``.
     * ``discovery_url`` / ``client_id`` / ``client_secret`` — per-view provider
       overrides (else the ``OIDC_CLIENT`` setting is used).
@@ -146,6 +160,9 @@ class OpenIDConnectViewMixin:
 
         Returns:
             A redirect response to the provider's authorization endpoint.
+
+        Raises:
+            ProviderUnreachable: If the discovery document cannot be fetched.
         """
         client = self.get_oauth_client()
         code_verifier = client.generate_code_verifier()
@@ -171,21 +188,49 @@ class OpenIDConnectViewMixin:
         matched attempt (an empty dict if none), so a view can resume e.g. a
         ``next`` destination.
 
+        The matched attempt is consumed whatever happens next, so a callback can
+        be answered once. That includes a provider error response: the provider
+        issued no code, so the attempt is of no further use.
+
+        The state is checked first. An ``error`` that arrives with a state this
+        session does not hold raises ``StateMismatch``, not
+        ``AuthorizationErrorResponse``, because nothing ties that error to a
+        sign in this session started.
+
         Returns:
             The token response, with ``id_token`` as a validated ``IDToken``.
 
         Raises:
-            SuspiciousOperation: If the state matches no pending attempt, or the
-                ID token nonce does not match the pending nonce.
+            StateMismatch: If the state matches no pending attempt.
+            AuthorizationErrorResponse: If the provider sent ``error`` in place
+                of ``code``. Raised before any call to the provider.
+            MissingAuthorizationCode: If the callback has neither ``code`` nor
+                ``error``. Raised before any call to the provider.
+            ProviderUnreachable: If discovery, the token endpoint, or the JWKS
+                endpoint gives no usable answer.
+            TokenExchangeError: If the token endpoint refuses the code.
+            IDTokenValidationError: If the ID token is missing or not valid.
+            NonceMismatch: If the ID token nonce is not the pending nonce.
         """
-        code = self.request.GET.get("code")
-        state = self.request.GET.get("state")
+        params = self.request.GET
 
         # Match (and consume) the attempt before doing any network work, so a
         # stale or forged state fails fast without a needless token exchange.
-        attempt = self._pop_attempt(state)
+        attempt = self._pop_attempt(params.get("state"))
         if attempt is None:
-            raise SuspiciousOperation("OAuth state does not match any pending login.")
+            raise StateMismatch("OAuth state does not match any pending login.")
+
+        error = params.get("error")
+        if error is not None:
+            raise AuthorizationErrorResponse(
+                error,
+                description=params.get("error_description"),
+                uri=params.get("error_uri"),
+            )
+
+        code = params.get("code")
+        if not code:
+            raise MissingAuthorizationCode("The callback carries no authorization code.")
 
         client = self.get_oauth_client()
         token_response = client.token(
@@ -197,7 +242,7 @@ class OpenIDConnectViewMixin:
         nonce = attempt.get("nonce")
         claims = json.loads(token_response["id_token"].claims)
         if nonce and nonce != claims.get("nonce"):
-            raise SuspiciousOperation("ID token nonce does not match the pending login nonce.")
+            raise NonceMismatch("ID token nonce does not match the pending login nonce.")
 
         self.attempt_extra = {
             k: v for k, v in attempt.items() if k not in ("code_verifier", "nonce")
@@ -208,13 +253,32 @@ class OpenIDConnectViewMixin:
 class BaseOpenIDConnectRedirectView(OpenIDConnectViewMixin, RedirectView):
     """GET kicks off the flow. A ``?next=`` rides along with that attempt only."""
 
-    def get(self, request, *args, **kwargs) -> HttpResponseRedirect:
+    def get(self, request, *args, **kwargs) -> HttpResponse:
         """Start the flow, carrying any ``?next=`` with this attempt."""
         extra = {}
         if next_url := request.GET.get("next"):
             extra["next"] = next_url
 
-        return self.create_authorize_redirect(**extra)
+        try:
+            return self.create_authorize_redirect(**extra)
+        except OIDCError as exc:
+            return self.handle_redirect_error(exc)
+
+    def handle_redirect_error(self, exc: OIDCError) -> HttpResponse:
+        """Answer a sign in that could not start.
+
+        In practice ``exc`` is a ``ProviderUnreachable``: the discovery document
+        could not be fetched. The default raises ``exc`` again. Override this to
+        return a response of your own, and raise ``exc`` for what you do not
+        answer.
+
+        Args:
+            exc: The error that stopped the redirect.
+
+        Returns:
+            The response to send in place of the redirect to the provider.
+        """
+        raise exc
 
 
 class BaseOpenIDConnectCallbackView(OpenIDConnectViewMixin, RedirectView):
@@ -229,16 +293,23 @@ class BaseOpenIDConnectCallbackView(OpenIDConnectViewMixin, RedirectView):
     success_url: None | str = None
     auth_backend: str = "django.contrib.auth.backends.ModelBackend"
 
-    def get(self, request, *args, **kwargs) -> HttpResponseRedirect:
-        """Handle the callback: validate, resolve the user, log in, and redirect."""
-        token_response = self.oidc_callback()
+    def get(self, request, *args, **kwargs) -> HttpResponse:
+        """Handle the callback: validate, resolve the user, log in, and redirect.
 
-        # Keep the raw ID token so the logout view can send it as id_token_hint.
-        request.session[ID_TOKEN_HINT_SESSION_KEY] = token_response["id_token"].serialize()
+        An ``OIDCError`` raised on the way to the login goes to
+        ``handle_callback_error``.
+        """
+        try:
+            token_response = self.oidc_callback()
 
-        claims = self.get_claims(token_response)
-        user = self.get_or_create_user_from_claims(claims)
-        self.login(user)
+            # Keep the raw ID token so the logout view can send it as id_token_hint.
+            request.session[ID_TOKEN_HINT_SESSION_KEY] = token_response["id_token"].serialize()
+
+            claims = self.get_claims(token_response)
+            user = self.get_or_create_user_from_claims(claims)
+            self.login(user)
+        except OIDCError as exc:
+            return self.handle_callback_error(exc)
 
         return HttpResponseRedirect(self.get_success_url())
 
@@ -281,6 +352,31 @@ class BaseOpenIDConnectCallbackView(OpenIDConnectViewMixin, RedirectView):
     def login(self, user) -> None:
         """Log the user into the current session using ``auth_backend``."""
         login(self.request, user, backend=self.auth_backend)
+
+    def handle_callback_error(self, exc: OIDCError) -> HttpResponse:
+        """Answer a sign in that did not finish.
+
+        Receives every ``OIDCError`` raised while the callback is handled: the
+        ones ``oidc_callback`` raises, and any subclass that your own overrides
+        raise (for example to refuse an account in
+        ``get_or_create_user_from_claims``).
+
+        The default raises ``exc`` again, so Django answers 400 for the errors
+        that are also a ``SuspiciousOperation`` and 500 for the others. Override
+        this to return a response of your own, and raise ``exc`` for what you do
+        not answer.
+
+        The ``error``, ``description``, and ``uri`` of an
+        ``AuthorizationErrorResponse`` are query string text that anyone can
+        write. Never put them in a response.
+
+        Args:
+            exc: The error that stopped the sign in.
+
+        Returns:
+            The response to send in place of the redirect after login.
+        """
+        raise exc
 
     def get_success_url(self, *args, **kwargs) -> str:
         """Return the post-login destination.
