@@ -89,7 +89,8 @@ class CallbackView(BaseOpenIDConnectCallbackView):
 | Where | What |
 | --- | --- |
 | `OIDC_CLIENT` setting | discovery URL, client id/secret, optional `requests.Session` |
-| `success_url` | post-login redirect (a `?next=` query param wins over it) |
+| `success_url` | redirect after login (a `?next=` on this site wins over it) |
+| `success_url_allowed_hosts` / `get_success_url_allowed_hosts()` | other hosts a `?next=` may name (both views) |
 | `get_or_create_user_from_claims(claims)` | the per-app user upsert |
 | `claims_class` | swap in a provider-specific claims dataclass |
 | `auth_backend` | the Django auth backend used for `login()` |
@@ -98,6 +99,43 @@ class CallbackView(BaseOpenIDConnectCallbackView):
 | `get_oauth_client()` | override wholesale for an exotic client |
 | `handle_callback_error(exc)` | answer a sign in that did not finish (callback view) |
 | `handle_redirect_error(exc)` | answer a sign in that could not start (redirect view) |
+
+## The `next` destination
+
+A `?next=` on the login link is where the browser goes when the sign in ends.
+The redirect view keeps it with the attempt, and the callback view follows it
+in place of `success_url`.
+
+`next` comes from the query string, so anyone can write it. Both views accept
+it only when it is on this site: a path, or an address whose host is the host
+of the request. When the request is HTTPS, an address that names a scheme must
+name HTTPS. A value that fails is dropped with no error, and the sign in ends
+at `success_url`. The check is Django's `url_has_allowed_host_and_scheme`, the
+one Django's own `LoginView` makes.
+
+What to know:
+
+- **`next` is sent as it is written.** It is never read as a URL name. Only
+  `success_url` goes through `resolve_url()`.
+- **The callback view checks again.** A session can hold a value that was
+  stored with no check, so the callback view does not trust what an attempt
+  holds.
+- **Another host is an opt in.** Add it to `success_url_allowed_hosts` on the
+  redirect view and on the callback view, or override
+  `get_success_url_allowed_hosts()`. The names are those of Django's
+  `RedirectURLMixin`.
+- **A view of your own owes the same check.** If you override `get()` or
+  `get_success_url()` and read `attempt_extra["next"]` yourself, call
+  `self.is_allowed_next_url(next_url)` before you redirect there.
+
+```python
+class LoginView(BaseOpenIDConnectRedirectView):
+    success_url_allowed_hosts = {"reports.example.com"}
+
+class CallbackView(BaseOpenIDConnectCallbackView):
+    success_url = "home"
+    success_url_allowed_hosts = {"reports.example.com"}
+```
 
 ## Error handling
 

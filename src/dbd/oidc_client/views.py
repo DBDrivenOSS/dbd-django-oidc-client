@@ -13,6 +13,11 @@ override ``get_or_create_user_from_claims``.
 Concurrent logins are tab-safe: each in-flight attempt is stored under its own
 OAuth ``state``, so simultaneous logins in different tabs do not collide.
 
+A ``?next=`` on the link that starts a sign in is where the browser goes when
+the sign in ends. It comes from the query string, so anyone can write it. The
+views keep it and follow it only when it is on this site (see
+``is_allowed_next_url``), and fall back to ``success_url`` when it is not.
+
 A sign in that does not finish raises an ``OIDCError`` (see
 ``dbd.oidc_client.exceptions``). The redirect and callback views pass it to
 ``handle_redirect_error`` and ``handle_callback_error``, which raise it again
@@ -29,6 +34,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponse, HttpResponseRedirect
 from django.shortcuts import resolve_url
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.generic import RedirectView
 
 from dbd.oidc_client.claims import OpenIDClaims
@@ -65,6 +71,9 @@ class OpenIDConnectViewMixin:
     * ``handle_callback_error`` / ``handle_redirect_error`` — answer a sign in
       that did not finish with your own response.
     * ``redirect_uri_name``, ``scopes``, ``session_namespace``.
+    * ``success_url_allowed_hosts`` / ``get_success_url_allowed_hosts`` — let a
+      ``next`` destination name a host other than this one. Set it on the
+      redirect view and on the callback view.
     * ``discovery_url`` / ``client_id`` / ``client_secret`` — per-view provider
       overrides (else the ``OIDC_CLIENT`` setting is used).
     * ``get_oauth_client`` — override wholesale for an exotic client.
@@ -83,6 +92,10 @@ class OpenIDConnectViewMixin:
     # few short strings); this just stops a user spamming the login link from
     # bloating the session cookie. Oldest attempts are evicted first.
     max_pending_attempts: int = 5
+
+    # Hosts, other than the one this request came to, that a ``next`` destination
+    # may name. Empty by default, so a sign in can end only on this site.
+    success_url_allowed_hosts: set[str] = set()
 
     # Application data carried with the matched attempt (e.g. ``{"next": ...}``);
     # populated by ``oidc_callback``.
@@ -104,6 +117,41 @@ class OpenIDConnectViewMixin:
     def get_scopes(self) -> list[str]:
         """Return the OAuth scopes to request."""
         return list(self.scopes)
+
+    def get_success_url_allowed_hosts(self) -> set[str]:
+        """Return the hosts a ``next`` destination may name.
+
+        The default is the host this request came to, plus
+        ``success_url_allowed_hosts``. The name and the behavior are those of
+        Django's ``RedirectURLMixin``.
+
+        Returns:
+            The allowed hosts, each with its port when the address has one.
+        """
+        return {self.request.get_host(), *self.success_url_allowed_hosts}
+
+    def is_allowed_next_url(self, url) -> bool:
+        """Tell whether a ``next`` destination may be kept and followed.
+
+        ``next`` comes from the query string, so anyone can write it. It is
+        allowed when it is a path on this site, or an address whose host is in
+        ``get_success_url_allowed_hosts``. When this request is HTTPS, an
+        address that names a scheme must name HTTPS.
+
+        Args:
+            url: The candidate destination. A value that is not text is refused.
+
+        Returns:
+            True if the browser may be sent to ``url``.
+        """
+        if not isinstance(url, str):
+            return False
+
+        return url_has_allowed_host_and_scheme(
+            url,
+            allowed_hosts=self.get_success_url_allowed_hosts(),
+            require_https=self.request.is_secure(),
+        )
 
     # ── pending-attempt storage (keyed by OAuth state) ───────────────
 
@@ -156,7 +204,8 @@ class OpenIDConnectViewMixin:
             **extra_attempt_data: Application data (e.g. a ``next`` destination)
                 persisted with the attempt and returned by ``oidc_callback`` as
                 ``attempt_extra``. The protocol values (code verifier, nonce)
-                take precedence over any colliding key here.
+                take precedence over any colliding key here. Nothing here is
+                checked: the callback view checks ``next`` before it follows it.
 
         Returns:
             A redirect response to the provider's authorization endpoint.
@@ -254,9 +303,14 @@ class BaseOpenIDConnectRedirectView(OpenIDConnectViewMixin, RedirectView):
     """GET kicks off the flow. A ``?next=`` rides along with that attempt only."""
 
     def get(self, request, *args, **kwargs) -> HttpResponse:
-        """Start the flow, carrying any ``?next=`` with this attempt."""
+        """Start the flow, carrying a ``?next=`` on this site with this attempt.
+
+        A ``next`` that ``is_allowed_next_url`` refuses is dropped with no
+        error, and the sign in starts without it.
+        """
         extra = {}
-        if next_url := request.GET.get("next"):
+        next_url = request.GET.get("next")
+        if self.is_allowed_next_url(next_url):
             extra["next"] = next_url
 
         try:
@@ -381,22 +435,31 @@ class BaseOpenIDConnectCallbackView(OpenIDConnectViewMixin, RedirectView):
     def get_success_url(self, *args, **kwargs) -> str:
         """Return the post-login destination.
 
-        Honors a ``?next=`` captured with this attempt, falling back to
-        ``success_url``.
+        Honors a ``next`` held with this attempt when ``is_allowed_next_url``
+        accepts it, and falls back to ``success_url`` when it does not. The
+        check is made here as well as in the redirect view, because a session
+        can hold a value that was stored with no check.
+
+        ``next`` is returned as it is written. Only ``success_url`` goes
+        through ``resolve_url()``, which reads a bare word as a URL name.
 
         Returns:
-            The resolved redirect target.
+            The redirect target.
 
         Raises:
-            ImproperlyConfigured: If neither a ``next`` nor ``success_url`` is set.
+            ImproperlyConfigured: If the attempt holds no allowed ``next`` and
+                ``success_url`` is not set.
         """
-        extra = self.attempt_extra or {}
-        target = extra.get("next") or self.success_url
-        if target is None:
+        next_url = (self.attempt_extra or {}).get("next")
+        if self.is_allowed_next_url(next_url):
+            return next_url
+
+        if self.success_url is None:
             raise ImproperlyConfigured(
                 "Set `success_url` on the callback view or override get_success_url()."
             )
-        return resolve_url(target)
+
+        return resolve_url(self.success_url)
 
 
 class BaseOpenIDConnectLogoutView(OpenIDConnectViewMixin, RedirectView):
