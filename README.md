@@ -90,6 +90,7 @@ class CallbackView(BaseOpenIDConnectCallbackView):
 | --- | --- |
 | `OIDC_CLIENT` setting | discovery URL, client id/secret, optional `requests.Session` |
 | `success_url` | redirect after login (a `?next=` on this site wins over it) |
+| `redirect_field_name` | the query parameter that carries the destination, `next` by default (redirect view) |
 | `success_url_allowed_hosts` / `get_success_url_allowed_hosts()` | other hosts a `?next=` may name (both views) |
 | `get_or_create_user_from_claims(claims)` | the per-app user upsert |
 | `claims_class` | swap in a provider-specific claims dataclass |
@@ -120,6 +121,11 @@ What to know:
 - **The callback view checks again.** A session can hold a value that was
   stored with no check, so the callback view does not trust what an attempt
   holds.
+- **The parameter name is yours to set.** `redirect_field_name` on the redirect
+  view names the query parameter, as on Django's `RedirectURLMixin`. The
+  default is `next`. The value is kept with the attempt as
+  `attempt_extra["next"]` whatever the parameter is called, so the callback
+  view needs no setting. Set it to `None` to carry no destination.
 - **Another host is an opt in.** Add it to `success_url_allowed_hosts` on the
   redirect view and on the callback view, or override
   `get_success_url_allowed_hosts()`. The names are those of Django's

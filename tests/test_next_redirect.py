@@ -6,9 +6,10 @@ with no check of the host or the scheme. A link such as
 ``/auth/login/?next=https://attacker.example/`` ended a real sign in at the
 provider with a redirect to another site, from the application's own address.
 
-These tests cover that in four groups:
+These tests cover that in five groups:
 
 * store: what the redirect view keeps with the attempt;
+* field: ``redirect_field_name`` names the query parameter the value comes in;
 * follow: where the callback view sends the browser, for a value that came
   through the redirect view and for one an attempt already held;
 * written: ``next`` is sent as it is written, and only ``success_url`` is read
@@ -24,6 +25,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from django.contrib.auth import REDIRECT_FIELD_NAME
 from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory
 
@@ -121,6 +123,12 @@ class CallbackView(StubProviderMixin, BaseOpenIDConnectCallbackView):
         self.request.signed_in = user
 
 
+class ReturnToLoginView(LoginView):
+    """A consumer whose login links carry the destination as ``return_to``."""
+
+    redirect_field_name = "return_to"
+
+
 class PartnerLoginView(LoginView):
     """A consumer that lets a sign in end on one other host."""
 
@@ -206,6 +214,48 @@ def test_a_refused_next_still_starts_the_sign_in():
 def test_a_secure_request_does_not_store_a_plain_http_next():
     # Over HTTPS, a plain HTTP address on this host is a step down.
     _, attempt = _start(FakeSession(), secure=True, next="http://testserver/reports/")
+
+    assert "next" not in attempt
+
+
+# --- field: redirect_field_name names the query parameter -----------------
+
+
+def test_default_redirect_field_name_is_the_one_django_uses():
+    assert BaseOpenIDConnectRedirectView.redirect_field_name == REDIRECT_FIELD_NAME == "next"
+
+
+def test_redirect_field_name_names_the_query_parameter():
+    session = FakeSession()
+    state, attempt = _start(session, view_class=ReturnToLoginView, return_to=SAME_SITE_NEXT)
+
+    # Kept as "next" whatever the parameter is called, so a callback view that
+    # sets nothing finds it.
+    assert attempt["next"] == SAME_SITE_NEXT
+
+    response = _finish(session, state)
+
+    assert response.url == SAME_SITE_NEXT
+
+
+def test_a_view_with_another_field_name_does_not_read_next():
+    _, attempt = _start(FakeSession(), view_class=ReturnToLoginView, next=SAME_SITE_NEXT)
+
+    assert "next" not in attempt
+
+
+@pytest.mark.parametrize("external", EXTERNAL_NEXT_VALUES)
+def test_another_field_name_gets_the_same_check(external):
+    _, attempt = _start(FakeSession(), view_class=ReturnToLoginView, return_to=external)
+
+    assert "next" not in attempt
+
+
+def test_a_redirect_field_name_of_none_carries_no_destination():
+    class NoDestinationLoginView(LoginView):
+        redirect_field_name = None
+
+    _, attempt = _start(FakeSession(), view_class=NoDestinationLoginView, next=SAME_SITE_NEXT)
 
     assert "next" not in attempt
 

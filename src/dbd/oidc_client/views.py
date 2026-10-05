@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 
-from django.contrib.auth import get_user_model, login
+from django.contrib.auth import REDIRECT_FIELD_NAME, get_user_model, login
 from django.contrib.auth import logout as auth_logout
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponse, HttpResponseRedirect
@@ -71,6 +71,8 @@ class OpenIDConnectViewMixin:
     * ``handle_callback_error`` / ``handle_redirect_error`` — answer a sign in
       that did not finish with your own response.
     * ``redirect_uri_name``, ``scopes``, ``session_namespace``.
+    * ``redirect_field_name`` — on the redirect view, the query parameter that
+      carries the ``next`` destination.
     * ``success_url_allowed_hosts`` / ``get_success_url_allowed_hosts`` — let a
       ``next`` destination name a host other than this one. Set it on the
       redirect view and on the callback view.
@@ -302,14 +304,22 @@ class OpenIDConnectViewMixin:
 class BaseOpenIDConnectRedirectView(OpenIDConnectViewMixin, RedirectView):
     """GET kicks off the flow. A ``?next=`` rides along with that attempt only."""
 
+    # The query parameter that carries the destination, named as on Django's
+    # ``RedirectURLMixin``. None carries no destination.
+    redirect_field_name: None | str = REDIRECT_FIELD_NAME
+
     def get(self, request, *args, **kwargs) -> HttpResponse:
         """Start the flow, carrying a ``?next=`` on this site with this attempt.
 
-        A ``next`` that ``is_allowed_next_url`` refuses is dropped with no
+        The destination is read from the ``redirect_field_name`` query
+        parameter. It is kept with the attempt as ``next`` whatever the
+        parameter is called, so the callback view needs no setting to find it.
+
+        A destination that ``is_allowed_next_url`` refuses is dropped with no
         error, and the sign in starts without it.
         """
         extra = {}
-        next_url = request.GET.get("next")
+        next_url = request.GET.get(self.redirect_field_name)
         if self.is_allowed_next_url(next_url):
             extra["next"] = next_url
 
